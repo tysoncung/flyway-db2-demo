@@ -20,7 +20,9 @@ echo "-- V1__Baseline_existing_schema.sql
 -- This migration represents the existing database state
 -- No actual DDL needed as tables already exist" > flyway/sql/V1__Baseline_existing_schema.sql
 
-# 3. Move other migrations to start from V2 or higher
+# 3. Move other migrations to start fro
+
+m V2 or higher
 cd flyway/sql
 mv V1__Create_policyholders_table.sql old/
 mv V2__Create_policies_table.sql V10__Create_policies_table.sql
