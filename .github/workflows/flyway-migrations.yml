@@ -1,0 +1,188 @@
+name: Flyway Migrations
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'flyway/sql/**'
+      - '.github/workflows/flyway-migrations.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'flyway/sql/**'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  DB2_VERSION: 11.5.9.0-community
+
+jobs:
+  validate-migrations:
+    name: Validate Migrations
+    runs-on: ubuntu-latest
+    
+    services:
+      db2:
+        image: icr.io/db2_community/db2:11.5.9.0-community
+        env:
+          LICENSE: accept
+          DB2INST1_PASSWORD: db2inst1-pwd
+          DBNAME: ICWADB
+        ports:
+          - 50000:50000
+        options: >-
+          --privileged
+          --health-cmd="su - db2inst1 -c 'db2 connect to ICWADB'"
+          --health-interval=30s
+          --health-timeout=10s
+          --health-retries=10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Flyway
+        run: |
+          wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.22.0/flyway-commandline-10.22.0-linux-x64.tar.gz | tar xz
+          sudo ln -s $PWD/flyway-10.22.0/flyway /usr/local/bin
+          
+          # Download DB2 JDBC driver
+          mkdir -p flyway-10.22.0/drivers
+          curl -L https://repo1.maven.org/maven2/com/ibm/db2/jcc/11.5.9.0/jcc-11.5.9.0.jar \
+               -o flyway-10.22.0/drivers/jcc.jar
+      
+      - name: Wait for DB2
+        run: |
+          for i in {1..30}; do
+            if docker exec ${{ job.services.db2.id }} su - db2inst1 -c "db2 connect to ICWADB" 2>/dev/null; then
+              echo "DB2 is ready!"
+              break
+            fi
+            echo "Waiting for DB2... ($i/30)"
+            sleep 10
+          done
+      
+      - name: Validate migrations
+        run: |
+          cd flyway
+          flyway validate \
+            -url=jdbc:db2://localhost:50000/ICWADB \
+            -user=db2inst1 \
+            -password=db2inst1-pwd \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql
+      
+      - name: Run migrations (dry run)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd flyway
+          flyway info \
+            -url=jdbc:db2://localhost:50000/ICWADB \
+            -user=db2inst1 \
+            -password=db2inst1-pwd \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql
+      
+      - name: Run migrations
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cd flyway
+          flyway migrate \
+            -url=jdbc:db2://localhost:50000/ICWADB \
+            -user=db2inst1 \
+            -password=db2inst1-pwd \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -cleanDisabled=false
+      
+      - name: Generate migration report
+        if: always()
+        run: |
+          cd flyway
+          flyway info \
+            -url=jdbc:db2://localhost:50000/ICWADB \
+            -user=db2inst1 \
+            -password=db2inst1-pwd \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -outputType=json > migration-report.json
+      
+      - name: Upload migration report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: migration-report
+          path: flyway/migration-report.json
+
+  test-with-dotnet:
+    name: Test .NET 9 Connection
+    needs: validate-migrations
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    services:
+      db2:
+        image: icr.io/db2_community/db2:11.5.9.0-community
+        env:
+          LICENSE: accept
+          DB2INST1_PASSWORD: db2inst1-pwd
+          DBNAME: ICWADB
+        ports:
+          - 50000:50000
+        options: >-
+          --privileged
+          --health-cmd="su - db2inst1 -c 'db2 connect to ICWADB'"
+          --health-interval=30s
+          --health-timeout=10s
+          --health-retries=10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      
+      - name: Setup Flyway and run migrations
+        run: |
+          # Download Flyway
+          wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.22.0/flyway-commandline-10.22.0-linux-x64.tar.gz | tar xz
+          
+          # Download DB2 driver
+          mkdir -p flyway-10.22.0/drivers
+          curl -L https://repo1.maven.org/maven2/com/ibm/db2/jcc/11.5.9.0/jcc-11.5.9.0.jar \
+               -o flyway-10.22.0/drivers/jcc.jar
+          
+          # Run migrations
+          cd flyway
+          ../flyway-10.22.0/flyway migrate \
+            -url=jdbc:db2://localhost:50000/ICWADB \
+            -user=db2inst1 \
+            -password=db2inst1-pwd \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -cleanDisabled=false
+      
+      - name: Test .NET connection
+        run: |
+          # Create test project
+          dotnet new console -n TestDb2 -f net9.0
+          cd TestDb2
+          dotnet add package Net.IBM.Data.Db2 --version 9.0.0.300
+          
+          # Create test program
+          cat > Program.cs << 'EOF'
+          using IBM.Data.Db2;
+          
+          var cs = "Server=localhost:50000;Database=ICWADB;UID=db2inst1;PWD=db2inst1-pwd;";
+          using var conn = new DB2Connection(cs);
+          conn.Open();
+          
+          using var cmd = new DB2Command("SELECT COUNT(*) FROM POLICYHOLDERS", conn);
+          var count = cmd.ExecuteScalar();
+          Console.WriteLine($"✅ Connection successful! Found {count} policyholders");
+          EOF
+          
+          # Run test
+          dotnet run

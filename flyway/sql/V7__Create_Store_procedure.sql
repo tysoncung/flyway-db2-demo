@@ -1,0 +1,7 @@
+-- V6__Create_Store_procedure.sql
+CREATE PROCEDURE GET_USERS()
+LANGUAGE SQL
+BEGIN
+    DECLARE user_count INTEGER;
+    SELECT COUNT(*) INTO user_count FROM USERS;
+END;

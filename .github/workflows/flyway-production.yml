@@ -1,0 +1,130 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      dry_run:
+        description: 'Dry run only (no actual migration)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  deploy-migrations:
+    name: Deploy Migrations to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Flyway
+        run: |
+          wget -qO- https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/10.22.0/flyway-commandline-10.22.0-linux-x64.tar.gz | tar xz
+          sudo ln -s $PWD/flyway-10.22.0/flyway /usr/local/bin
+          
+          # Download DB2 JDBC driver
+          mkdir -p flyway-10.22.0/drivers
+          curl -L https://repo1.maven.org/maven2/com/ibm/db2/jcc/11.5.9.0/jcc-11.5.9.0.jar \
+               -o flyway-10.22.0/drivers/jcc.jar
+      
+      - name: Configure environment
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "DB_HOST=${{ secrets.PROD_DB_HOST }}" >> $GITHUB_ENV
+            echo "DB_PORT=${{ secrets.PROD_DB_PORT }}" >> $GITHUB_ENV
+            echo "DB_NAME=${{ secrets.PROD_DB_NAME }}" >> $GITHUB_ENV
+            echo "DB_USER=${{ secrets.PROD_DB_USER }}" >> $GITHUB_ENV
+            echo "DB_PASSWORD=${{ secrets.PROD_DB_PASSWORD }}" >> $GITHUB_ENV
+          else
+            echo "DB_HOST=${{ secrets.STAGING_DB_HOST }}" >> $GITHUB_ENV
+            echo "DB_PORT=${{ secrets.STAGING_DB_PORT }}" >> $GITHUB_ENV
+            echo "DB_NAME=${{ secrets.STAGING_DB_NAME }}" >> $GITHUB_ENV
+            echo "DB_USER=${{ secrets.STAGING_DB_USER }}" >> $GITHUB_ENV
+            echo "DB_PASSWORD=${{ secrets.STAGING_DB_PASSWORD }}" >> $GITHUB_ENV
+          fi
+      
+      - name: Check current migration status
+        run: |
+          cd flyway
+          flyway info \
+            -url="jdbc:db2://${{ env.DB_HOST }}:${{ env.DB_PORT }}/${{ env.DB_NAME }}" \
+            -user="${{ env.DB_USER }}" \
+            -password="${{ env.DB_PASSWORD }}" \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql
+      
+      - name: Validate migrations
+        run: |
+          cd flyway
+          flyway validate \
+            -url="jdbc:db2://${{ env.DB_HOST }}:${{ env.DB_PORT }}/${{ env.DB_NAME }}" \
+            -user="${{ env.DB_USER }}" \
+            -password="${{ env.DB_PASSWORD }}" \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql
+      
+      - name: Dry run (show pending migrations)
+        if: inputs.dry_run == true
+        run: |
+          echo "🔍 DRY RUN MODE - No changes will be made"
+          cd flyway
+          flyway info \
+            -url="jdbc:db2://${{ env.DB_HOST }}:${{ env.DB_PORT }}/${{ env.DB_NAME }}" \
+            -user="${{ env.DB_USER }}" \
+            -password="${{ env.DB_PASSWORD }}" \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -outputType=json | jq '.migrations[] | select(.state == "Pending")'
+      
+      - name: Run migrations
+        if: inputs.dry_run == false
+        run: |
+          echo "🚀 Running migrations on ${{ inputs.environment }}"
+          cd flyway
+          flyway migrate \
+            -url="jdbc:db2://${{ env.DB_HOST }}:${{ env.DB_PORT }}/${{ env.DB_NAME }}" \
+            -user="${{ env.DB_USER }}" \
+            -password="${{ env.DB_PASSWORD }}" \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -outOfOrder=false \
+            -validateMigrationNaming=true
+      
+      - name: Post-migration report
+        if: always()
+        run: |
+          cd flyway
+          flyway info \
+            -url="jdbc:db2://${{ env.DB_HOST }}:${{ env.DB_PORT }}/${{ env.DB_NAME }}" \
+            -user="${{ env.DB_USER }}" \
+            -password="${{ env.DB_PASSWORD }}" \
+            -schemas=DB2INST1 \
+            -locations=filesystem:./sql \
+            -outputType=json > migration-report.json
+          
+          # Create summary
+          echo "## Migration Report for ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | Description | State |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+          jq -r '.migrations[] | "| \(.version) | \(.description) | \(.state) |"' migration-report.json >> $GITHUB_STEP_SUMMARY
+      
+      - name: Notify Slack
+        if: always()
+        uses: slack-actions/slack@v1
+        with:
+          status: ${{ job.status }}
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          message: |
+            Flyway migration ${{ inputs.dry_run && 'dry run' || 'deployment' }} to ${{ inputs.environment }}
+            Status: ${{ job.status }}
+            Actor: ${{ github.actor }}
