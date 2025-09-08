@@ -52,7 +52,7 @@ jobs:
       run: |
         docker exec $(docker ps -q -f ancestor=icr.io/db2_community/db2) su - db2inst1 -c "
           db2 connect to testdb &&
-          db2 'CREATE SCHEMA IF NOT EXISTS FLYWAY' &&
+          db2 'CREATE SCHEMA FLYWAY' || echo 'Schema might already exist' &&
           db2 terminate
         "
     
