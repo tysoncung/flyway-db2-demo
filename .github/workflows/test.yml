@@ -56,18 +56,10 @@ jobs:
           db2 terminate
         "
     
-    - name: Cache Flyway
-      uses: actions/cache@v3
-      with:
-        path: ~/flyway
-        key: flyway-${{ runner.os }}-10.22.1
-    
     - name: Download and setup Flyway
       run: |
-        if [ ! -d "$HOME/flyway" ]; then
-          wget -qO- https://download.red-gate.com/maven/release/com/redgate/flyway/flyway-commandline/10.22.1/flyway-commandline-10.22.1-linux-x64.tar.gz | tar xz -C $HOME
-          mv $HOME/flyway-* $HOME/flyway
-        fi
+        wget -qO- https://download.red-gate.com/maven/release/com/redgate/flyway/flyway-commandline/10.22.1/flyway-commandline-10.22.1-linux-x64.tar.gz | tar xz -C $HOME
+        mv $HOME/flyway-* $HOME/flyway
         echo "$HOME/flyway" >> $GITHUB_PATH
     
     - name: Download DB2 JDBC Driver
