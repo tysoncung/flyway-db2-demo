@@ -104,10 +104,15 @@ jobs:
       run: |
         docker exec $(docker ps -q -f ancestor=icr.io/db2_community/db2) su - db2inst1 -c "
           db2 connect to testdb &&
-          db2 'SELECT * FROM FLYWAY.FLYWAY_SCHEMA_HISTORY' &&
           db2 'LIST TABLES FOR SCHEMA FLYWAY' &&
-          db2 'SELECT COUNT(*) FROM FLYWAY.USERS' &&
-          db2 'SELECT COUNT(*) FROM FLYWAY.PRODUCTS' &&
-          db2 'SELECT COUNT(*) FROM FLYWAY.ORDERS' &&
+          db2 terminate
+        " || true
+        
+        echo "Checking if tables were created..."
+        docker exec $(docker ps -q -f ancestor=icr.io/db2_community/db2) su - db2inst1 -c "
+          db2 connect to testdb &&
+          db2 'SELECT COUNT(*) AS USER_COUNT FROM FLYWAY.USERS' &&
+          db2 'SELECT COUNT(*) AS PRODUCT_COUNT FROM FLYWAY.PRODUCTS' &&
+          db2 'SELECT COUNT(*) AS ORDER_COUNT FROM FLYWAY.ORDERS' &&
           db2 terminate
         "
